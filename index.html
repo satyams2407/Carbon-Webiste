@@ -4,32 +4,57 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Carbon Footprint Tracker</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;700&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
   <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    .gradient-text {
+      background: linear-gradient(45deg, #10B981, #3B82F6);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    body {
+      transition: background-color 0.3s;
+    }
+    .drag-area {
+      min-height: 100px;
+      border: 2px dashed #ccc;
+      padding: 20px;
+      margin-bottom: 10px;
+    }
+    .drag-over {
+      background-color: #e0e0e0;
+      border-color: #10B981;
+    }
+  </style>
 </head>
 <body>
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect } = React;
+    const { useState, useEffect, useRef } = React;
 
     const App = () => {
       const [user, setUser] = useState(null);
       const [activities, setActivities] = useState([]);
-      const [formData, setFormData] = useState({
-        type: 'transport',
-        value: '',
-        unit: 'km',
-      });
+      const [formData, setFormData] = useState({ type: 'transport', value: '', unit: 'km' });
       const [carbonScore, setCarbonScore] = useState(0);
       const [suggestions, setSuggestions] = useState([]);
       const [achievements, setAchievements] = useState([]);
       const [isRegistering, setIsRegistering] = useState(false);
+      const [filterType, setFilterType] = useState('all');
+      const [darkMode, setDarkMode] = useState(false);
+      const [weatherImpact, setWeatherImpact] = useState(1.0);
+      const chartRef = useRef(null);
+      const [dragActive, setDragActive] = useState(false);
+      const [newSuggestions, setNewSuggestions] = useState([]);
+      const [newAchievements, setNewAchievements] = useState([]);
 
-      // Set token from localStorage if it exists
       useEffect(() => {
         const token = localStorage.getItem('token');
         if (token) {
@@ -39,12 +64,82 @@
               setUser(res.data);
               fetchAll();
             })
-            .catch(() => {
+            .catch(err => {
               localStorage.removeItem('token');
               delete axios.defaults.headers.common['Authorization'];
             });
         }
+        let mounted = true;
+        axios.get('/api/weather')
+          .then(res => {
+            if (mounted) {
+              const temp = res.data.main.temp;
+              setWeatherImpact(temp > 30 ? 1.2 : temp < 15 ? 0.8 : 1.0);
+            }
+          })
+          .catch(() => mounted && setWeatherImpact(1.0));
+        return () => { mounted = false; };
       }, []);
+
+      useEffect(() => {
+        if (user) {
+          const eventSource = new EventSource('/api/events');
+          eventSource.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === 'activities') setActivities(data.payload);
+            if (data.type === 'carbonScore') setCarbonScore(data.payload);
+            if (data.type === 'suggestions') {
+              setSuggestions(data.payload);
+              setNewSuggestions(data.payload.filter(s => !s.notified));
+            }
+            if (data.type === 'achievements') {
+              setAchievements(data.payload);
+              setNewAchievements(data.payload.filter(a => !a.notified));
+            }
+          };
+          eventSource.onerror = () => eventSource.close();
+          return () => eventSource.close();
+        }
+      }, [user]);
+
+      useEffect(() => {
+        if (newSuggestions.length > 0) {
+          newSuggestions.forEach(s => alert(s.text));
+          setSuggestions(suggestions.map(s => ({ ...s, notified: true })));
+        }
+      }, [newSuggestions]);
+
+      useEffect(() => {
+        if (newAchievements.length > 0) {
+          newAchievements.forEach(a => alert(a.text));
+          setAchievements(achievements.map(a => ({ ...a, notified: true })));
+        }
+      }, [newAchievements]);
+
+      useEffect(() => {
+        if (chartRef.current && activities.length > 0) {
+          const ctx = chartRef.current.getContext('2d');
+          if (chartRef.current.chart) chartRef.current.chart.destroy();
+          chartRef.current.chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels: getLast7Days(),
+              datasets: [{
+                label: 'Carbon Footprint (kg CO₂)',
+                data: getCarbonByDay(),
+                borderColor: '#10B981',
+                backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                fill: true,
+              }],
+            },
+            options: {
+              responsive: true,
+              scales: { y: { beginAtZero: true, title: { display: true, text: 'kg CO₂' } } },
+              plugins: { tooltip: { enabled: true }, zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true } } } },
+            },
+          });
+        }
+      }, [activities]);
 
       const fetchAll = () => {
         fetchActivities();
@@ -53,21 +148,10 @@
         fetchAchievements();
       };
 
-      const fetchActivities = () => {
-        axios.get('/api/activities').then(res => setActivities(res.data));
-      };
-
-      const fetchCarbonScore = () => {
-        axios.get('/api/carbon-score').then(res => setCarbonScore(res.data.score));
-      };
-
-      const fetchSuggestions = () => {
-        axios.get('/api/suggestions').then(res => setSuggestions(res.data));
-      };
-
-      const fetchAchievements = () => {
-        axios.get('/api/achievements').then(res => setAchievements(res.data));
-      };
+      const fetchActivities = () => axios.get('/api/activities').then(res => setActivities(res.data));
+      const fetchCarbonScore = () => axios.get('/api/carbon-score').then(res => setCarbonScore(res.data.score));
+      const fetchSuggestions = () => axios.get('/api/suggestions').then(res => setSuggestions(res.data));
+      const fetchAchievements = () => axios.get('/api/achievements').then(res => setAchievements(res.data));
 
       const handleAuth = async (e) => {
         e.preventDefault();
@@ -91,25 +175,102 @@
   (error.response && error.response.data && error.response.data.message) || 
   'Authentication failed'
 );
+
         }
       };
 
       const handleSubmitActivity = async (e) => {
         e.preventDefault();
         try {
-          await axios.post('/api/activities', formData);
+          const adjustedCarbon = calculateAdjustedCarbon(formData.type, formData.value, formData.unit);
+          await axios.post('/api/activities', { ...formData, carbon: adjustedCarbon });
           fetchAll();
           setFormData({ type: 'transport', value: '', unit: 'km' });
+          alert('Activity logged successfully!');
         } catch (error) {
           alert('Failed to log activity');
         }
       };
 
+      const handleLogout = () => {
+        localStorage.removeItem('token');
+        delete axios.defaults.headers.common['Authorization'];
+        setUser(null);
+        setActivities([]);
+        setCarbonScore(0);
+        setSuggestions([]);
+        setAchievements([]);
+        if (chartRef.current && chartRef.current.chart) chartRef.current.chart.destroy();
+      };
+
+      const handleDrag = (e, type) => {
+        e.dataTransfer.setData('text/plain', type);
+      };
+
+      const handleDrop = async (e) => {
+        e.preventDefault();
+        setDragActive(false);
+        const type = e.dataTransfer.getData('text/plain');
+        const value = prompt(`Enter value for ${type} (e.g., 10)`);
+        const unit = { transport: 'km', electricity: 'kWh', food: 'kg' }[type];
+        if (value && !isNaN(value)) {
+          const adjustedCarbon = calculateAdjustedCarbon(type, value, unit);
+          try {
+            await axios.post('/api/activities', { type, value, unit, carbon: adjustedCarbon });
+            fetchAll();
+            alert('Activity logged via drag-and-drop!');
+          } catch (error) {
+            alert('Failed to log activity');
+          }
+        }
+      };
+
+      const calculateAdjustedCarbon = (type, value, unit) => {
+        const baseCarbon = value * { transport: 0.2, electricity: 0.5, food: 2.5 }[type] || 1;
+        return baseCarbon * weatherImpact;
+      };
+
+      const getLast7Days = () => {
+        const labels = [];
+        for (let i = 6; i >= 0; i--) {
+          const d = new Date();
+          d.setDate(d.getDate() - i);
+          labels.push(d.toLocaleDateString('en-US', { weekday: 'short' }));
+        }
+        return labels;
+      };
+
+      const getCarbonByDay = () => {
+        const today = new Date();
+        return getLast7Days().map((_, i) => {
+          const date = new Date(today);
+          date.setDate(today.getDate() - i);
+          return activities
+            .filter(a => new Date(a.date).toLocaleDateString('en-US', { weekday: 'short' }) === getLast7Days()[i])
+            .reduce((sum, a) => sum + (a.carbon || 0), 0);
+        });
+      };
+
+      const filteredActivities = filterType === 'all'
+        ? activities
+        : activities.filter(a => a.type === filterType);
+
+      const getBackgroundColor = () => {
+        if (carbonScore < 50) return '#D1FAE5'; // Green
+        if (carbonScore < 100) return '#FEF3C7'; // Yellow
+        return '#FEE2E2'; // Red
+      };
+
+      const calculateOffset = () => {
+        const treesNeeded = Math.ceil(carbonScore / 21); // Approx. 21 kg CO₂ per tree
+        return treesNeeded > 0 ? `${treesNeeded} trees` : 'No offset needed!';
+      };
+
       if (!user) {
         return (
-          <div className="flex items-center justify-center min-h-screen bg-gray-100">
+          <div className={`flex items-center justify-center min-h-screen ${darkMode ? 'bg-gray-900' : 'bg-gray-100'}`}>
             <div className="bg-white p-8 rounded-lg shadow-md w-96">
-              <h2 className="text-2xl font-bold mb-6 text-center">
+              <h2 className="text-2xl font-bold gradient-text mb-6 text-center">
                 {isRegistering ? 'Register' : 'Login'}
               </h2>
               <form onSubmit={handleAuth}>
@@ -134,7 +295,7 @@
                   {isRegistering ? 'Sign Up' : 'Login'}
                 </button>
               </form>
-              <p className="mt-4 text-center text-sm">
+              <p className="mt-4 text-center text-sm text-gray-600">
                 {isRegistering ? 'Already have an account?' : "Don't have an account?"}{' '}
                 <button
                   onClick={() => setIsRegistering(!isRegistering)}
@@ -149,13 +310,57 @@
       }
 
       return (
-        <div className="min-h-screen bg-gray-100 p-4">
+        <div className={`min-h-screen p-4 ${darkMode ? 'bg-gray-800 text-white' : 'bg-gray-100'}`} style={{ backgroundColor: getBackgroundColor() }}>
           <div className="max-w-4xl mx-auto">
-            <h1 className="text-3xl font-bold mb-6">Carbon Footprint Tracker</h1>
+            <div className="flex justify-between items-center mb-6">
+              <h1 className="text-4xl font-bold gradient-text">Carbon Footprint Tracker</h1>
+              <button
+                onClick={() => setDarkMode(!darkMode)}
+                className="bg-gray-300 text-black p-2 rounded hover:bg-gray-400"
+              >
+                {darkMode ? 'Light Mode' : 'Dark Mode'}
+              </button>
+            </div>
+
+            {/* Drag-and-Drop Activity Logging */}
+            <div className="bg-white p-6 rounded-lg shadow-md mb-6">
+              <h2 className="text-xl font-semibold gradient-text mb-4">Log Activity (Drag & Drop)</h2>
+              <div className="grid grid-cols-3 gap-4 mb-4">
+                <div
+                  draggable="true"
+                  onDragStart={(e) => handleDrag(e, 'transport')}
+                  className="bg-green-200 p-4 rounded cursor-move"
+                >
+                  Transport
+                </div>
+                <div
+                  draggable="true"
+                  onDragStart={(e) => handleDrag(e, 'electricity')}
+                  className="bg-blue-200 p-4 rounded cursor-move"
+                >
+                  Electricity
+                </div>
+                <div
+                  draggable="true"
+                  onDragStart={(e) => handleDrag(e, 'food')}
+                  className="bg-yellow-200 p-4 rounded cursor-move"
+                >
+                  Food
+                </div>
+              </div>
+              <div
+                className={`drag-area ${dragActive ? 'drag-over' : ''}`}
+                onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+                onDragLeave={() => setDragActive(false)}
+                onDrop={handleDrop}
+              >
+                Drop activity here to log
+              </div>
+            </div>
 
             {/* Activity Form */}
             <div className="bg-white p-6 rounded-lg shadow-md mb-6">
-              <h2 className="text-xl font-semibold mb-4">Log Activity</h2>
+              <h2 className="text-xl font-semibold gradient-text mb-4">Manual Activity Log</h2>
               <form onSubmit={handleSubmitActivity}>
                 <select
                   value={formData.type}
@@ -192,40 +397,80 @@
               </form>
             </div>
 
+            {/* Activity Filter */}
+            <div className="mb-6">
+              <label className="mr-2">Filter by Type:</label>
+              <select
+                value={filterType}
+                onChange={(e) => setFilterType(e.target.value)}
+                className="p-2 border rounded"
+              >
+                <option value="all">All</option>
+                <option value="transport">Transport</option>
+                <option value="electricity">Electricity</option>
+                <option value="food">Food</option>
+              </select>
+            </div>
+
             {/* Dashboard */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="bg-white p-6 rounded-lg shadow-md">
-                <h2 className="text-xl font-semibold mb-4">Your Carbon Score</h2>
-                <p className="text-3xl font-bold">{carbonScore.toFixed(2)} kg CO₂</p>
+                <h2 className="text-xl font-semibold gradient-text mb-4">Your Carbon Score</h2>
+                <p className="text-3xl font-bold">{(carbonScore * weatherImpact).toFixed(2)} kg CO₂</p>
+                <div className="w-full bg-gray-200 rounded-full h-4 mt-2">
+                  <div
+                    className="bg-green-500 h-4 rounded-full"
+                    style={{ width: `${Math.min((carbonScore / 100) * 100, 100)}%` }}
+                  ></div>
+                </div>
+                <p className="text-sm mt-1">Goal: 100 kg CO₂/week</p>
               </div>
               <div className="bg-white p-6 rounded-lg shadow-md">
-                <h2 className="text-xl font-semibold mb-4">Recent Activities</h2>
+                <h2 className="text-xl font-semibold gradient-text mb-4">Recent Activities</h2>
                 <ul>
-                  {activities.slice(0, 5).map((a) => (
+                  {filteredActivities.slice(0, 5).map((a) => (
                     <li key={a._id} className="mb-2">
-                      {a.type}: {a.value} {a.unit} → {a.carbon.toFixed(2)} kg CO₂
+                      {a.type}: {a.value} {a.unit} → {(a.carbon * weatherImpact).toFixed(2)} kg CO₂
                     </li>
                   ))}
                 </ul>
               </div>
             </div>
 
-            {/* Suggestions */}
+            {/* Trend Chart */}
             <div className="bg-white p-6 rounded-lg shadow-md mt-6">
-              <h2 className="text-xl font-semibold mb-4">Suggestions</h2>
+              <h2 className="text-xl font-semibold gradient-text mb-4">Carbon Footprint Trend</h2>
+              <canvas ref={chartRef} id="carbonChart"></canvas>
+            </div>
+
+            {/* Carbon Offset Calculator */}
+            <div className="bg-white p-6 rounded-lg shadow-md mt-6">
+              <h2 className="text-xl font-semibold gradient-text mb-4">Carbon Offset</h2>
+              <p>Offset your {(carbonScore * weatherImpact).toFixed(2)} kg CO₂ by planting {calculateOffset()}</p>
+              <button
+                onClick={() => alert(`Plant ${calculateOffset()} to offset your footprint!`)}
+                className="bg-blue-500 text-white p-2 rounded hover:bg-blue-600 mt-2"
+              >
+                Get Offset Plan
+              </button>
+            </div>
+
+            {/* Suggestions with Notifications */}
+            <div className="bg-white p-6 rounded-lg shadow-md mt-6">
+              <h2 className="text-xl font-semibold gradient-text mb-4">Suggestions</h2>
               <ul>
                 {suggestions.map((s, i) => (
-                  <li key={i} className="mb-2">{s}</li>
+                  <li key={i} className="mb-2">{s.text}</li>
                 ))}
               </ul>
             </div>
 
-            {/* Achievements */}
+            {/* Achievements with Notifications */}
             <div className="bg-white p-6 rounded-lg shadow-md mt-6">
-              <h2 className="text-xl font-semibold mb-4">Achievements</h2>
+              <h2 className="text-xl font-semibold gradient-text mb-4">Achievements</h2>
               <ul>
                 {achievements.map((a, i) => (
-                  <li key={i} className="mb-2">{a}</li>
+                  <li key={i} className="mb-2">{a.text}</li>
                 ))}
               </ul>
             </div>
@@ -236,5 +481,6 @@
 
     ReactDOM.render(<App />, document.getElementById('root'));
   </script>
-</body>
-</html>
+  </body>
+  </html>
+  
