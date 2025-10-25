@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Carbon Footprint Tracker</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+  <script src="https://unpkg.com/react@17/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const App = () => {
+      const [user, setUser] = useState(null);
+      const [activities, setActivities] = useState([]);
+      const [formData, setFormData] = useState({
+        type: 'transport',
+        value: '',
+        unit: 'km',
+      });
+      const [carbonScore, setCarbonScore] = useState(0);
+      const [suggestions, setSuggestions] = useState([]);
+      const [achievements, setAchievements] = useState([]);
+      const [isRegistering, setIsRegistering] = useState(false);
+
+      // Set token from localStorage if it exists
+      useEffect(() => {
+        const token = localStorage.getItem('token');
+        if (token) {
+          axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+          axios.get('/api/user')
+            .then(res => {
+              setUser(res.data);
+              fetchAll();
+            })
+            .catch(() => {
+              localStorage.removeItem('token');
+              delete axios.defaults.headers.common['Authorization'];
+            });
+        }
+      }, []);
+
+      const fetchAll = () => {
+        fetchActivities();
+        fetchCarbonScore();
+        fetchSuggestions();
+        fetchAchievements();
+      };
+
+      const fetchActivities = () => {
+        axios.get('/api/activities').then(res => setActivities(res.data));
+      };
+
+      const fetchCarbonScore = () => {
+        axios.get('/api/carbon-score').then(res => setCarbonScore(res.data.score));
+      };
+
+      const fetchSuggestions = () => {
+        axios.get('/api/suggestions').then(res => setSuggestions(res.data));
+      };
+
+      const fetchAchievements = () => {
+        axios.get('/api/achievements').then(res => setAchievements(res.data));
+      };
+
+      const handleAuth = async (e) => {
+        e.preventDefault();
+        const email = e.target.email.value;
+        const password = e.target.password.value;
+        try {
+          if (isRegistering) {
+            await axios.post('/api/register', { email, password });
+            alert('Registration successful! Now log in.');
+            setIsRegistering(false);
+          } else {
+            const res = await axios.post('/api/login', { email, password });
+            const token = res.data.token;
+            localStorage.setItem('token', token);
+            axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+            setUser(res.data.user);
+            fetchAll();
+          }
+        } catch (error) {
+          alert(
+  (error.response && error.response.data && error.response.data.message) || 
+  'Authentication failed'
+);
+        }
+      };
+
+      const handleSubmitActivity = async (e) => {
+        e.preventDefault();
+        try {
+          await axios.post('/api/activities', formData);
+          fetchAll();
+          setFormData({ type: 'transport', value: '', unit: 'km' });
+        } catch (error) {
+          alert('Failed to log activity');
+        }
+      };
+
+      if (!user) {
+        return (
+          <div className="flex items-center justify-center min-h-screen bg-gray-100">
+            <div className="bg-white p-8 rounded-lg shadow-md w-96">
+              <h2 className="text-2xl font-bold mb-6 text-center">
+                {isRegistering ? 'Register' : 'Login'}
+              </h2>
+              <form onSubmit={handleAuth}>
+                <input
+                  type="email"
+                  name="email"
+                  placeholder="Email"
+                  className="w-full p-2 mb-4 border rounded"
+                  required
+                />
+                <input
+                  type="password"
+                  name="password"
+                  placeholder="Password"
+                  className="w-full p-2 mb-4 border rounded"
+                  required
+                />
+                <button
+                  type="submit"
+                  className="w-full bg-green-500 text-white p-2 rounded hover:bg-green-600"
+                >
+                  {isRegistering ? 'Sign Up' : 'Login'}
+                </button>
+              </form>
+              <p className="mt-4 text-center text-sm">
+                {isRegistering ? 'Already have an account?' : "Don't have an account?"}{' '}
+                <button
+                  onClick={() => setIsRegistering(!isRegistering)}
+                  className="text-blue-500 underline"
+                >
+                  {isRegistering ? 'Login' : 'Sign Up'}
+                </button>
+              </p>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen bg-gray-100 p-4">
+          <div className="max-w-4xl mx-auto">
+            <h1 className="text-3xl font-bold mb-6">Carbon Footprint Tracker</h1>
+
+            {/* Activity Form */}
+            <div className="bg-white p-6 rounded-lg shadow-md mb-6">
+              <h2 className="text-xl font-semibold mb-4">Log Activity</h2>
+              <form onSubmit={handleSubmitActivity}>
+                <select
+                  value={formData.type}
+                  onChange={(e) => setFormData({ ...formData, type: e.target.value })}
+                  className="w-full p-2 mb-4 border rounded"
+                >
+                  <option value="transport">Transport</option>
+                  <option value="electricity">Electricity</option>
+                  <option value="food">Food</option>
+                </select>
+                <input
+                  type="number"
+                  value={formData.value}
+                  onChange={(e) => setFormData({ ...formData, value: e.target.value })}
+                  placeholder="Value"
+                  className="w-full p-2 mb-4 border rounded"
+                  required
+                />
+                <select
+                  value={formData.unit}
+                  onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
+                  className="w-full p-2 mb-4 border rounded"
+                >
+                  <option value="km">km (Transport)</option>
+                  <option value="kWh">kWh (Electricity)</option>
+                  <option value="kg">kg (Food)</option>
+                </select>
+                <button
+                  type="submit"
+                  className="bg-green-500 text-white p-2 rounded hover:bg-green-600"
+                >
+                  Log Activity
+                </button>
+              </form>
+            </div>
+
+            {/* Dashboard */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-white p-6 rounded-lg shadow-md">
+                <h2 className="text-xl font-semibold mb-4">Your Carbon Score</h2>
+                <p className="text-3xl font-bold">{carbonScore.toFixed(2)} kg CO₂</p>
+              </div>
+              <div className="bg-white p-6 rounded-lg shadow-md">
+                <h2 className="text-xl font-semibold mb-4">Recent Activities</h2>
+                <ul>
+                  {activities.slice(0, 5).map((a) => (
+                    <li key={a._id} className="mb-2">
+                      {a.type}: {a.value} {a.unit} → {a.carbon.toFixed(2)} kg CO₂
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+
+            {/* Suggestions */}
+            <div className="bg-white p-6 rounded-lg shadow-md mt-6">
+              <h2 className="text-xl font-semibold mb-4">Suggestions</h2>
+              <ul>
+                {suggestions.map((s, i) => (
+                  <li key={i} className="mb-2">{s}</li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Achievements */}
+            <div className="bg-white p-6 rounded-lg shadow-md mt-6">
+              <h2 className="text-xl font-semibold mb-4">Achievements</h2>
+              <ul>
+                {achievements.map((a, i) => (
+                  <li key={i} className="mb-2">{a}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
